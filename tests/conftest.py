@@ -6,8 +6,15 @@ mechanism, so no real Supabase project is required.
 
 from __future__ import annotations
 
+import os
+import uuid
 from typing import Any
 from unittest.mock import MagicMock
+
+# Provide a deterministic POSITION_SECRET so position-auth tests can run
+# without a real .env. The matching value is what tests build their
+# `X-Position-Secret` header from.
+os.environ.setdefault("POSITION_SECRET", "test-position-secret")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,21 +30,47 @@ class FakeSupabase:
     Each table gets a `from_` chain that records the query and returns
     mock data. Tests can pre-seed via `seed(table, rows)` and assert on
     the rows returned by the chain.
+
+    `rpc` returns a `FakeQuery` (so `.execute()` chains) that the test
+    can pre-load with a return value via `seed_rpc(name, value)`.
     """
 
     def __init__(self) -> None:
         self.tables: dict[str, list[dict[str, Any]]] = {}
         self.calls: list[dict[str, Any]] = []
+        self.rpc_results: dict[str, Any] = {}
 
     # ---- table seed ------------------------------------------------------
 
     def seed(self, table: str, rows: list[dict[str, Any]]) -> None:
         self.tables[table] = list(rows)
 
+    def seed_rpc(self, name: str, value: Any) -> None:
+        """Configure the value returned by a future `rpc(name).execute()`."""
+        self.rpc_results[name] = value
+
     # ---- table access ----------------------------------------------------
 
     def table(self, name: str) -> "FakeQuery":
         return FakeQuery(self, name)
+
+    # ---- RPC -------------------------------------------------------------
+
+    def rpc(self, name: str, params: Any = None) -> "FakeRpc":
+        """PostgREST `rpc(name, params)`. Returns a builder so the
+        caller can chain `.execute()` (matching the real supabase-py
+        client). Configure the value with `seed_rpc(name, value)`.
+        """
+        self.calls.append({"rpc": name, "params": params})
+        return FakeRpc(self.rpc_results.get(name))
+
+
+class FakeRpc:
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def execute(self) -> "FakeResponse":
+        return FakeResponse(self._value)
 
 
 class FakeQuery:
@@ -98,6 +131,43 @@ class FakeQuery:
 
     # ---- terminal --------------------------------------------------------
 
+    def _join_nested(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Emulate PostgREST nested-resource selects like `students(...)`.
+
+        Walks the select string for tokens of the form `tablename(...)`,
+        joins the matching rows from the child table, and attaches them
+        under a key matching the relationship name. The FK convention
+        varies (buses → bus_id, but profiles → school_id) so we try
+        a few common parents first.
+        """
+        import re
+
+        nested = re.findall(r"(\w+)\([^)]*\)", self._select)
+        if not nested:
+            return rows
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            copy = dict(row)
+            for child_table in nested:
+                child_rows = list(self.client.tables.get(child_table, []))
+                # Try every plausible FK to the parent. Tables ending in `es`
+                # (buses, classes) usually singularise to drop both
+                # (`bus_id`); other plurals drop one `s` (`schools` →
+                # `school_id`). Try a few candidates and let the data
+                # pick the right one.
+                parent_id = row.get("id")
+                fk_candidates = [
+                    f"{self.table[:-2]}_id" if self.table.endswith("es") else f"{self.table[:-1]}_id",
+                    f"{self.table}_id",
+                ]
+                joined = []
+                for c in child_rows:
+                    if any(c.get(fk) == parent_id for fk in fk_candidates):
+                        joined.append(c)
+                copy[child_table] = joined
+            out.append(copy)
+        return out
+
     def execute(self) -> "FakeResponse":
         rows = list(self.client.tables.get(self.table, []))
         for op, col, val in self._filters:
@@ -105,10 +175,18 @@ class FakeQuery:
                 rows = [r for r in rows if r.get(col) == val]
 
         if self._mode == "select":
-            result = rows[: self._limit] if self._limit else rows
+            joined = self._join_nested(rows)
+            result = joined[: self._limit] if self._limit else joined
         elif self._mode == "insert":
             new_rows = self._payload if isinstance(self._payload, list) else [self._payload]
+            # Mimic Postgres `gen_random_uuid()` default so tests can
+            # rely on `inserted[0]["id"]` like the real DB does. The
+            # only tables we rely on having an `id` default in the
+            # schema are `buses`, `students`, etc.; the helper does no
+            # harm on others.
             for r in new_rows:
+                if isinstance(r, dict) and not r.get("id"):
+                    r["id"] = str(uuid.uuid4())
                 rows.append(r)
             result = new_rows
         elif self._mode == "update":
@@ -116,9 +194,11 @@ class FakeQuery:
                 r.update(self._payload)
             result = rows
         elif self._mode == "delete":
-            for r in rows:
-                r["_deleted"] = True
-            result = rows
+            # Actually remove the rows from the in-memory table so
+            # subsequent selects don't see ghosts.
+            surviving = [r for r in rows if not r.get("_deleted")]
+            result = rows  # deleted rows still reported for tests that assert on it
+            rows = surviving
         elif self._mode == "upsert":
             payloads = self._payload if isinstance(self._payload, list) else [self._payload]
             for p in payloads:
@@ -145,6 +225,9 @@ class FakeQuery:
                 "payload": self._payload,
             }
         )
+        # Persist mutations back to the in-memory table so subsequent
+        # queries in tests observe the changes.
+        self.client.tables[self.table] = rows
         return FakeResponse(result)
 
 

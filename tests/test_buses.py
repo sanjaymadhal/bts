@@ -17,7 +17,9 @@ def _seed_auth_client(client, fake_supabase, *, sub="user-1"):
         [{"id": sub, "role": "admin", "school_id": "school-1",
           "display_name": "Admin", "phone": None, "linked_student_id": None}],
     )
-    fake_supabase.seed("schools", [{"id": "school-1", "name": "DPS East", "code": "DPS-EAST"}])
+    # SCHOOL_CODE must match the default in app.config.Settings so the
+    # school lookup that gates profile visibility finds a row.
+    fake_supabase.seed("schools", [{"id": "school-1", "name": "KSSEM", "code": "KSSEM"}])
 
 
 def test_list_drivers(client, fake_supabase, auth_header):

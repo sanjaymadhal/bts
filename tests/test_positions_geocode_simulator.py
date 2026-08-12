@@ -11,15 +11,19 @@ import pytest
 
 
 def test_positions_requires_service_role(client):
+    # Shared-secret auth: missing header → 403 (the request reached the
+    # auth check but couldn't satisfy it). The simulator/driver app
+    # always sends X-Position-Secret, so 401-without-body is reserved
+    # for future JWT auth.
     r = client.post("/positions/bus-1", json={"latitude": 12.97, "longitude": 77.59})
-    assert r.status_code == 401
+    assert r.status_code == 403
 
 
 def test_positions_wrong_token_rejected(client):
     r = client.post(
         "/positions/bus-1",
         json={"latitude": 12.97, "longitude": 77.59},
-        headers={"Authorization": "Bearer wrong-token"},
+        headers={"X-Position-Secret": "wrong-token"},
     )
     assert r.status_code == 403
 
@@ -27,15 +31,15 @@ def test_positions_wrong_token_rejected(client):
 def test_positions_service_role_upserts(client, fake_supabase):
     from app.config import get_settings
 
-    token = get_settings().SUPABASE_SERVICE_ROLE_KEY
+    secret = get_settings().POSITION_SECRET
     r = client.post(
         "/positions/bus-1",
         json={"latitude": 12.97, "longitude": 77.59},
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"X-Position-Secret": secret},
     )
     assert r.status_code == 204
     rows = fake_supabase.tables.get("bus_positions", [])
-    assert any(r["bus_id"] == "bus-1" for r in rows)
+    assert any(row["bus_id"] == "bus-1" for row in rows)
 
 
 # ---- /geocode --------------------------------------------------------------

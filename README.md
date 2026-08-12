@@ -14,10 +14,15 @@ python -m venv .venv
 source .venv/bin/activate          # (PowerShell: .venv\Scripts\Activate.ps1)
 pip install -r requirements.txt
 cp .env.example .env               # then edit values
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 The driver simulator starts automatically when `SIMULATE_DRIVERS=true`.
+
+**Why `--host 0.0.0.0`:** uvicorn's default is `127.0.0.1`, which only
+accepts loopback connections. The Expo dev client on a physical phone
+can't reach `localhost` on your laptop — bind to all interfaces and
+point the app at your LAN IP (`http://192.168.x.x:8000`) instead.
 
 ## Tests
 

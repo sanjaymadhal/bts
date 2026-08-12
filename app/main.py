@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Annotated
 
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import Settings, get_settings
+from .config import get_settings
 from .geocode import router as geocode_router
 from .auth import router as auth_router
 from .buses import router as buses_router
@@ -18,6 +17,7 @@ from .invitations import router as invitations_router
 from .settings import router as settings_router
 from .positions import router as positions_router
 from .profiles import router as profiles_router
+from .notifications import router as notifications_router
 from .simulator import start_simulator, stop_simulator
 
 
@@ -33,8 +33,8 @@ async def lifespan(app: FastAPI):
         await stop_simulator(task)
 
 
-def create_app(settings: Annotated[Settings, Depends(get_settings)] = None) -> FastAPI:
-    settings = settings or get_settings()
+def create_app() -> FastAPI:
+    settings = get_settings()
     app = FastAPI(
         title="Trackr API",
         version="1.0.0",
@@ -45,7 +45,10 @@ def create_app(settings: Annotated[Settings, Depends(get_settings)] = None) -> F
         CORSMiddleware,
         allow_origins=settings.CORS_ALLOW_ORIGINS,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        # OPTIONS is handled automatically by Starlette's CORS middleware
+        # when preflight requests arrive; explicit listing here is fine
+        # but not required.
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
@@ -57,6 +60,7 @@ def create_app(settings: Annotated[Settings, Depends(get_settings)] = None) -> F
     app.include_router(invitations_router, prefix="/invitations", tags=["invitations"])
     app.include_router(settings_router, prefix="/settings", tags=["settings"])
     app.include_router(positions_router, prefix="/positions", tags=["positions"])
+    app.include_router(notifications_router, prefix="/notifications", tags=["notifications"])
     app.include_router(geocode_router, tags=["geocode"])
 
     @app.get("/health", tags=["health"])
