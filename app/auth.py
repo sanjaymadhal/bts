@@ -192,14 +192,16 @@ def login(
             {"email": body.email, "password": body.password}
         )
     except Exception as exc:  # supabase-py raises a generic exception on bad creds
-        # Don't surface the underlying error message — that would let
-        # attackers enumerate which emails exist.
+        # Log the underlying exception for debugging (server-side only).
+        # Don't return the raw error to clients to avoid enumeration.
+        _logger.exception("supabase sign_in_with_password failed for %s", body.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         ) from exc
 
     if not auth.session or not auth.session.access_token:
+        _logger.warning("sign_in_with_password returned no session for %s: %r", body.email, getattr(auth, '__dict__', auth))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
