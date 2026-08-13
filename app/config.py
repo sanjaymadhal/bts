@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # no domain verification required). Both legacy Resend fields are
     # still loaded so old `.env` files don't crash on boot.
     RESEND_API_KEY: str = ""
-    EMAIL_FROM: str = "Trackr <noreply@trackr.app>"
+    EMAIL_FROM: str = "Trackr <onboarding@resend.dev>"
 
     # Gmail SMTP. The "app password" is a 16-char per-application
     # credential generated at https://myaccount.google.com/apppasswords

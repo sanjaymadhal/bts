@@ -35,10 +35,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-import smtplib
 import string
 from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
+import httpx
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -176,15 +175,8 @@ def _send_invite_email(
     the invitation row and surface the failure state.
     """
     settings = get_settings()
-    if not settings.SMTP_USER or not settings.SMTP_APP_PASSWORD:
-        # Operator hasn't configured SMTP — fail loudly so the issue is
-        # visible in the admin UI rather than silently no-oping.
-        return (
-            False,
-            "SMTP not configured (set SMTP_USER + SMTP_APP_PASSWORD in .env)",
-            None,
-        )
-
+    # Use Resend HTTP API when configured (preferred on Render free tier).
+    api_key = getattr(settings, "RESEND_API_KEY", None)
     from_addr = settings.EMAIL_FROM
     subject = f"Your {school_name} Trackr account"
     body = (
@@ -197,30 +189,28 @@ def _send_invite_email(
         f"— {school_name} Trackr\n"
     )
 
-    msg = EmailMessage()
-    msg["From"] = from_addr
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.set_content(body)
+    if not api_key:
+        _logger.warning("[invite] Resend API key not configured; cannot send email to %s", to_email)
+        return (False, "Resend API key not configured (set RESEND_API_KEY)", None)
 
+    payload = {
+        "from": from_addr,
+        "to": to_email,
+        "subject": subject,
+        "text": body,
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
-            if settings.SMTP_USE_TLS:
-                smtp.starttls()
-            smtp.login(settings.SMTP_USER, settings.SMTP_APP_PASSWORD)
-            smtp.send_message(msg)
-        return (True, None, from_addr)
-    except (smtplib.SMTPAuthenticationError, smtplib.SMTPException, OSError) as exc:
-        _logger.warning(
-            "[invite] SMTP send failed for %s via %s: %s",
-            to_email,
-            settings.SMTP_HOST,
-            exc,
-        )
-        # Trim verbose exception text — the admin UI shows this in a
-        # small line under the email-delivered badge.
+        r = httpx.post("https://api.resend.com/emails", json=payload, headers=headers, timeout=10.0)
+    except Exception as exc:
+        _logger.warning("[invite] Resend transport failure for %s: %s", to_email, exc)
         short = str(exc).splitlines()[0][:160] if str(exc) else exc.__class__.__name__
         return (False, short, None)
+
+    if 200 <= r.status_code < 300:
+        return (True, None, "resend")
+    _logger.warning("[invite] Resend rejected for %s: %s — %s", to_email, r.status_code, r.text[:200])
+    return (False, f"Resend rejected: {r.status_code} {r.text[:200]}", "resend")
 
 
 # ---------------------------------------------------------------------------
