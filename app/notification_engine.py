@@ -200,37 +200,45 @@ async def _list_students_with_parents(supabase_admin, bus_id: str) -> list[dict[
     not visible to anyone in the app's notification surface.
     """
     try:
-        res = (
+        student_res = (
             supabase_admin.table("students")
-            .select("id, name, stop, profiles!linked_via_parent(id, role, school_id)")
+            .select("id, name, stop")
             .eq("bus_id", bus_id)
             .execute()
         )
-        rows = _get_data(res) or []
+        students = _get_data(student_res) or []
+
+        if not students:
+            return []
+
+        student_ids = [s.get("id") for s in students if s.get("id")]
+        parent_map: dict[str, str] = {}
+        if student_ids:
+            parent_res = (
+                supabase_admin.table("profiles")
+                .select("id, linked_student_id, role")
+                .eq("role", "parent")
+                .in_("linked_student_id", student_ids)
+                .execute()
+            )
+            parent_rows = _get_data(parent_res) or []
+            for p in parent_rows:
+                linked_student_id = p.get("linked_student_id")
+                parent_id = p.get("id")
+                if linked_student_id and parent_id:
+                    parent_map[linked_student_id] = parent_id
     except Exception as exc:
         _logger.warning("list students on bus %s failed: %s", bus_id, exc)
         return []
 
     out: list[dict[str, Any]] = []
-    for r in rows:
-        # Supabase returns the nested join as either a list (PostgREST
-        # default) or, in the inverse-FK direction, as a single dict.
-        # The names here depend on the column we join on; the actual
-        # select above is best-effort.
-        parents = r.get("profiles") or []
-        if isinstance(parents, dict):
-            parents = [parents]
-        parent_id = None
-        for p in parents:
-            if p and p.get("role") == "parent":
-                parent_id = p.get("id")
-                break
+    for s in students:
         out.append(
             {
-                "student_id": r.get("id"),
-                "student_name": r.get("name"),
-                "stop": r.get("stop"),
-                "parent_id": parent_id,
+                "student_id": s.get("id"),
+                "student_name": s.get("name"),
+                "stop": s.get("stop"),
+                "parent_id": parent_map.get(s.get("id")),
             }
         )
     return out
@@ -294,9 +302,7 @@ async def _insert_notification(
         "data": data,
     }
     try:
-        await _run_supabase(
-            supabase_admin.table("notifications").insert(payload).execute
-        )
+        await _run_supabase(supabase_admin, supabase_admin.table("notifications").insert(payload).execute)
     except Exception as exc:
         _logger.warning(
             "notification insert failed (user=%s kind=%s): %s",

@@ -369,7 +369,10 @@ async def create_invitation(
     if duplicate_email and not auth_user_id:
         try:
             list_res = supabase_admin.auth.admin.list_users()
-            for au in (getattr(list_res, "users", None) or []):
+            users = list_res
+            if hasattr(list_res, "users"):
+                users = getattr(list_res, "users", None) or []
+            for au in users:
                 au_email = getattr(au, "email", None)
                 if au_email and au_email.lower() == body.email.lower():
                     auth_user_id = au.id
