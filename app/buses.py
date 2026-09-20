@@ -85,6 +85,8 @@ class BusPosition(BaseModel):
     # Bounded so corrupted positions can't escape into the map.
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
+    speed: float = 0
+    altitude: float = 0
     updated_at: Optional[str] = None
     is_online: bool = True
 
@@ -363,7 +365,7 @@ def get_bus_position(
             )
     res = (
         supabase.table("bus_positions")
-        .select("latitude, longitude, updated_at")
+        .select("latitude, longitude, speed, altitude, updated_at")
         .eq("bus_id", bus_id)
         .maybe_single()
         .execute()

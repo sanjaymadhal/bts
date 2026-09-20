@@ -128,7 +128,9 @@ class PositionOut(BaseModel):
     bus_id: str
     latitude: float
     longitude: float
-    updated_at: str
+    speed: float = 0
+    altitude: float = 0
+    updated_at: str | None = None
 
 @router.get("", response_model=List[PositionOut])
 def list_positions(

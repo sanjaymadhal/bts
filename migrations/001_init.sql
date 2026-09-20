@@ -75,8 +75,25 @@ create table if not exists public.bus_positions (
   bus_id      uuid primary key references public.buses(id) on delete cascade,
   latitude    double precision not null,
   longitude   double precision not null,
+  speed       double precision not null default 0,
+  altitude    double precision not null default 0,
   updated_at  timestamptz default now()
 );
+
+create or replace function public.set_bus_position_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists bus_positions_set_updated_at on public.bus_positions;
+create trigger bus_positions_set_updated_at
+before update on public.bus_positions
+for each row execute function public.set_bus_position_updated_at();
 
 -- Realtime: only bus_positions is published.
 -- Run after tables exist:

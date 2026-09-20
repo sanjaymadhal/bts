@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Any, Optional
+from uuid import UUID
 
 import paho.mqtt.client as mqtt
 from supabase import create_client
@@ -13,6 +15,24 @@ from .config import get_settings
 from .positions import _maybe_emit_stop_transition
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_bus_id(supabase, identifier: str) -> str | None:
+    """Resolve either a database UUID or the human-readable bus number."""
+    try:
+        UUID(identifier)
+        column = "id"
+    except ValueError:
+        column = "number"
+    row = (
+        supabase.table("buses")
+        .select("id")
+        .eq(column, identifier)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return row[0]["id"] if row else None
 
 class MQTTPositionClient:
     def __init__(self):
@@ -36,13 +56,20 @@ class MQTTPositionClient:
     def on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         try:
             payload = json.loads(msg.payload.decode())
-            bus_id = payload.get("bus_id")
-            lat = payload.get("latitude")
-            lng = payload.get("longitude")
-            speed = payload.get("speed", 0.0)
-            altitude = payload.get("altitude", 0.0)
+            identifier = str(payload.get("bus_id", "")).strip()
+            bus_id = _resolve_bus_id(self.supabase, identifier) if identifier else None
 
-            if not bus_id or lat is None or lng is None:
+            lat = float(payload["latitude"])
+            lng = float(payload["longitude"])
+            speed = float(payload.get("speed", 0.0))
+            altitude = float(payload.get("altitude", 0.0))
+
+            if (
+                not bus_id
+                or not all(math.isfinite(value) for value in (lat, lng, speed, altitude))
+                or not -90 <= lat <= 90
+                or not -180 <= lng <= 180
+            ):
                 logger.warning(f"Malformed MQTT payload: {payload}")
                 return
 
