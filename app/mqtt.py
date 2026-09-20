@@ -42,7 +42,7 @@ class MQTTPositionClient:
             speed = payload.get("speed", 0.0)
             altitude = payload.get("altitude", 0.0)
 
-            if not all([bus_id, lat, lng]):
+            if not bus_id or lat is None or lng is None:
                 logger.warning(f"Malformed MQTT payload: {payload}")
                 return
 
