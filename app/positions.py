@@ -12,21 +12,43 @@ token can't bypass the route's ACL.
 from __future__ import annotations
 
 import asyncio
+import datetime
 from typing import Annotated, List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from .config import Settings, get_settings
-from .deps import CurrentUser, get_current_user, get_supabase_admin
+from .deps import (
+    CurrentUser,
+    get_current_user,
+    get_supabase_admin,
+    load_app_role,
+    load_parent_scope,
+)
 from .notification_engine import emit_stop_transition
 
 router = APIRouter()
+
+#: Treat a position as "online" if it was updated within this window.
+ONLINE_THRESHOLD_SECONDS = 300
 
 def _get_data(res):
     if res is None:
         return None
     return getattr(res, "data", None)
+
+
+def _is_online(updated_at: str | None, threshold_seconds: int = ONLINE_THRESHOLD_SECONDS) -> bool:
+    """Whether a position timestamp is fresh enough to call the bus online."""
+    if not updated_at:
+        return False
+    try:
+        updated = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return (now - updated).total_seconds() <= threshold_seconds
+    except Exception:
+        return False
 
 
 def _load_bus_metadata(supabase, bus_id: str) -> tuple[str, list[dict[str, object]]] | None:
@@ -76,25 +98,32 @@ def _maybe_emit_stop_transition(
     latitude: float,
     longitude: float,
     previous_position: dict[str, object] | None,
-):
+    metadata: tuple[str, list[dict[str, object]]] | None = None,
+) -> tuple[str, list[dict[str, object]]] | None:
     """Blogically evaluate whether the bus crossed a stop boundary.
 
     We avoid spamming alerts on every heartbeat by comparing the
     previous nearest stop against the current nearest stop. If the
     route has not crossed a stop boundary, no notification rows are
     written.
+
+    Returns the bus metadata `(number, schedule)` used for the
+    evaluation (whether loaded or passed in) so callers — the MQTT
+    worker — can cache it for the next message. Returns None when the
+    bus has no schedule (nothing to evaluate or emit).
     """
-    metadata = _load_bus_metadata(supabase, bus_id)
     if metadata is None:
-        return
+        metadata = _load_bus_metadata(supabase, bus_id)
+    if metadata is None:
+        return None
 
     bus_number, schedule = metadata
     if not schedule:
-        return
+        return None
 
     current = _nearest_stop_index(schedule, latitude, longitude)
     if current is None:
-        return
+        return None
 
     current_index, current_name = current
 
@@ -105,9 +134,9 @@ def _maybe_emit_stop_transition(
             float(previous_position.get("longitude", longitude)),
         )
         if prev_index is None:
-            return
+            return None
         if prev_index[0] == current_index:
-            return
+            return metadata
 
     asyncio.run(
         emit_stop_transition(
@@ -118,6 +147,7 @@ def _maybe_emit_stop_transition(
             stop_name=current_name,
         )
     )
+    return metadata
 
 class PositionIn(BaseModel):
     # Bounded so corrupted positions can't escape into the map.
@@ -131,15 +161,35 @@ class PositionOut(BaseModel):
     speed: float = 0
     altitude: float = 0
     updated_at: str | None = None
+    is_online: bool = True
 
 @router.get("", response_model=List[PositionOut])
 def list_positions(
     user: Annotated[CurrentUser, Depends(get_current_user)],
     supabase=Depends(get_supabase_admin),
 ):
-    """Return latest positions for all buses. Used for cold-start seeding in UI."""
-    res = supabase.table("bus_positions").select("*").execute()
-    return _get_data(res) or []
+    """Return latest positions for all buses. Used for cold-start seeding in UI.
+
+    Parents are scoped to the single bus assigned to their child so a
+    parent can never enumerate the school's fleet (mirrors `list_buses`).
+    Every row carries `is_online` computed from `updated_at`.
+    """
+    if user.app_role is None:
+        user.app_role = load_app_role(user, supabase)
+
+    query = supabase.table("bus_positions").select("*")
+    if user.app_role == "parent":
+        scope = load_parent_scope(user, supabase)
+        bus_id = scope.get("assigned_bus_id")
+        if not bus_id:
+            return []
+        query = query.eq("bus_id", bus_id)
+
+    rows = _get_data(query.execute()) or []
+    return [
+        PositionOut(**{**row, "is_online": _is_online(row.get("updated_at"))})
+        for row in rows
+    ]
 
 def _require_position_secret(
     x_position_secret: Annotated[str | None, Header()] = None,

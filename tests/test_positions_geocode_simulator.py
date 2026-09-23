@@ -42,6 +42,30 @@ def test_positions_service_role_upserts(client, fake_supabase):
     assert any(row["bus_id"] == "bus-1" for row in rows)
 
 
+def test_positions_list_defaults_online_when_no_timestamp(client, fake_supabase, auth_header):
+    fake_supabase.seed(
+        "bus_positions",
+        [{"bus_id": "bus-1", "latitude": 12.97, "longitude": 77.59,
+          "speed": 10, "altitude": 0, "updated_at": None}],
+    )
+    r = client.get("/positions", headers=auth_header())
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["is_online"] is False  # no timestamp → not online
+
+
+def test_positions_list_marks_stale_offline(client, fake_supabase, auth_header):
+    fake_supabase.seed(
+        "bus_positions",
+        [{"bus_id": "bus-1", "latitude": 12.97, "longitude": 77.59,
+          "speed": 10, "altitude": 0, "updated_at": "2020-01-01T00:00:00Z"}],
+    )
+    r = client.get("/positions", headers=auth_header())
+    assert r.status_code == 200
+    assert r.json()[0]["is_online"] is False
+
+
 # ---- /geocode --------------------------------------------------------------
 
 

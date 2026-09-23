@@ -17,6 +17,7 @@ from .deps import (
     load_parent_scope,
 )
 from .config import get_settings
+from .positions import _is_online
 
 router = APIRouter()
 
@@ -97,9 +98,17 @@ class HistoryFrame(BaseModel):
     altitude: float
     created_at: str
 
+class DailyCount(BaseModel):
+    day: str
+    count: int
+
 class HistoryResponse(BaseModel):
     bus_id: str
     history: list[HistoryFrame]
+    #: Per-day point counts for the whole requested range (server-side
+    #: aggregation). Powers the 30-day trend chart without shipping the
+    #: full 3s-interval row dump to the phone.
+    daily_counts: list[DailyCount] = []
 
 class RouteResponse(BaseModel):
     bus_id: str
@@ -374,21 +383,7 @@ def get_bus_position(
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No position recorded.")
 
-    # Reliability fix: Calculate online status (updated within last 5 mins)
-    import datetime
-    updated_at_str = row.get("updated_at")
-    is_online = True
-    if updated_at_str:
-        try:
-            # Supabase timestamptz format
-            updated_at = datetime.datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
-            now = datetime.datetime.now(datetime.timezone.utc)
-            if (now - updated_at).total_seconds() > 300:
-                is_online = False
-        except Exception:
-            is_online = False
-
-    return BusPosition(**row, is_online=is_online)
+    return BusPosition(**row, is_online=_is_online(row.get("updated_at")))
 
 @router.get("/{bus_id}/history", response_model=HistoryResponse)
 def get_bus_history(
@@ -415,7 +410,7 @@ def get_bus_history(
             .eq("bus_id", bus_id)
             .gte("created_at", cutoff)
             .order("created_at", desc=True)
-            .limit(500)
+            .limit(2000)
             .execute()
         )
     except Exception as exc:
@@ -425,7 +420,29 @@ def get_bus_history(
         raise
 
     rows = _get_data(res) or []
-    return HistoryResponse(bus_id=bus_id, history=[HistoryFrame(**r) for r in rows])
+
+    # Aggregated per-day counts for the trend chart. Best-effort: if the
+    # function is missing (migration not applied) the chart falls back
+    # to whatever points arrived above instead of failing the request.
+    daily_counts: list[DailyCount] = []
+    try:
+        daily_res = (
+            supabase.rpc("bus_position_daily_counts", {"bus_id": bus_id, "since": cutoff})
+            .execute()
+        )
+        for row in _get_data(daily_res) or []:
+            day = row.get("day")
+            count = row.get("count")
+            if day is not None and count is not None:
+                daily_counts.append(DailyCount(day=str(day), count=int(count)))
+    except Exception as exc:
+        _logger.warning("daily counts RPC failed for bus %s: %s", bus_id, exc)
+
+    return HistoryResponse(
+        bus_id=bus_id,
+        history=[HistoryFrame(**r) for r in rows],
+        daily_counts=daily_counts,
+    )
 
 
 # ---------------------------------------------------------------------------

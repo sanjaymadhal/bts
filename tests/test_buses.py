@@ -150,6 +150,40 @@ def test_bus_position_404_when_no_row(client, fake_supabase, auth_header):
     assert r.status_code == 404
 
 
+def test_bus_history_returns_points_and_daily_counts(client, fake_supabase, auth_header):
+    _seed_bus(fake_supabase)
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    fake_supabase.seed(
+        "bus_position_history",
+        [
+            {"id": "h1", "bus_id": "bus-1", "latitude": 12.97, "longitude": 77.59,
+             "speed": 12, "altitude": 0, "created_at": now.isoformat()},
+            {"id": "h2", "bus_id": "bus-1", "latitude": 12.95, "longitude": 77.62,
+             "speed": 30, "altitude": 0,
+             "created_at": (now - datetime.timedelta(seconds=3)).isoformat()},
+        ],
+    )
+    fake_supabase.seed_rpc(
+        "bus_position_daily_counts",
+        [{"day": "2026-08-09", "count": 42}],
+    )
+    r = client.get("/buses/bus-1/history?days=30", headers=auth_header())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["history"]) == 2
+    assert body["daily_counts"] == [{"day": "2026-08-09", "count": 42}]
+
+
+def test_bus_history_falls_back_to_empty_daily_counts_on_rpc_error(client, fake_supabase, auth_header):
+    _seed_bus(fake_supabase)
+    fake_supabase.seed("bus_position_history", [])
+    fake_supabase.seed_rpc("bus_position_daily_counts", None)  # simulate missing function
+    r = client.get("/buses/bus-1/history?days=30", headers=auth_header())
+    assert r.status_code == 200, r.text
+    assert r.json()["daily_counts"] == []
+
+
 def test_bus_endpoints_require_auth(client):
     r = client.get("/buses")
     assert r.status_code == 401

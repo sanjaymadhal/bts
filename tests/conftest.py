@@ -95,6 +95,14 @@ class FakeQuery:
         self._filters.append(("eq", col, val))
         return self
 
+    def gte(self, col: str, val: Any) -> "FakeQuery":
+        self._filters.append(("gte", col, val))
+        return self
+
+    def in_(self, col: str, vals: list) -> "FakeQuery":
+        self._filters.append(("in", col, vals))
+        return self
+
     def order(self, *_args, **_kw) -> "FakeQuery":
         return self
 
@@ -173,6 +181,10 @@ class FakeQuery:
         for op, col, val in self._filters:
             if op == "eq":
                 rows = [r for r in rows if r.get(col) == val]
+            elif op == "gte":
+                rows = [r for r in rows if (r.get(col) is not None and r.get(col) >= val)]
+            elif op == "in":
+                rows = [r for r in rows if r.get(col) in val]
 
         if self._mode == "select":
             joined = self._join_nested(rows)
