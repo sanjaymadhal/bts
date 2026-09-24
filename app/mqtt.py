@@ -177,6 +177,16 @@ class MQTTPositionClient:
         # Track in memory so the next tick can diff without a SELECT.
         self._last_positions[bus_id] = {"latitude": lat, "longitude": lng}
 
+        # Persist every valid device fix before notification side effects.
+        # A stop-transition failure must never discard the history record.
+        self.supabase.table("bus_position_history").insert({
+            "bus_id": bus_id,
+            "latitude": lat,
+            "longitude": lng,
+            "speed": speed,
+            "altitude": altitude,
+        }).execute()
+
         # Stop-transition fan-out. Pass cached metadata to avoid a
         # bus lookup per message; the helper loads it on cache miss.
         metadata = self._cached_metadata(bus_id)
@@ -190,16 +200,6 @@ class MQTTPositionClient:
         )
         if loaded is not None and self._cached_metadata(bus_id) is None:
             self._metadata_cache[bus_id] = (loaded, time.monotonic())
-
-        # Log to history. Kept inline so history stays lossless and in
-        # arrival order with the live position.
-        self.supabase.table("bus_position_history").insert({
-            "bus_id": bus_id,
-            "latitude": lat,
-            "longitude": lng,
-            "speed": speed,
-            "altitude": altitude,
-        }).execute()
 
         logger.info(f"Updated position for bus {bus_id}: {lat}, {lng} | Speed: {speed} km/h | Alt: {altitude}m")
 
